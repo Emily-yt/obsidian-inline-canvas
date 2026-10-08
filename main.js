@@ -5,7 +5,7 @@ module.exports = class InlineCanvas extends Plugin {
     this.busy = false;
     this.previews = new Map();
     this.observers = new Map();
-    this.previewCounter = 0;
+
     this.previewDisposed = false;
     this.register(() => {
       this.previewDisposed = true;
@@ -83,6 +83,7 @@ module.exports = class InlineCanvas extends Plugin {
       const src = embed.getAttribute('src') || '';
       const path = src.split('#')[0];
       const previous = this.previews.get(embed);
+      if (embed.closest('.inline-canvas-preview')) continue;
       if (!path.toLowerCase().endsWith('.canvas')) {
         if (previous) { this.removePreview(previous); this.previews.delete(embed); }
         continue;
@@ -110,9 +111,10 @@ module.exports = class InlineCanvas extends Plugin {
     root.className = 'inline-canvas-preview';
     // Carry styles with the preview so the same renderer works in Slides documents.
     const style = doc.createElement('style');
-    style.textContent = '.inline-canvas-full-preview > :not(.inline-canvas-preview){display:none!important}.inline-canvas-preview{display:block;width:100%;text-align:left}.inline-canvas-preview svg{display:block;width:100%;height:auto;max-height:480px}.inline-canvas-preview-toolbar{display:flex;gap:8px;align-items:center;margin:8px 0;font-size:13px}.inline-canvas-preview-error{color:var(--text-error,#b42318)}';
+    style.textContent = '.inline-canvas-full-preview > :not(.inline-canvas-preview){display:none!important}.inline-canvas-preview{display:block;width:100%;text-align:left}.inline-canvas-native{height:440px;position:relative;overflow:hidden;border-radius:var(--radius-m);border:1px solid var(--background-modifier-border);background:var(--background-primary);font-size:var(--font-text-size,16px);font-family:var(--font-text);line-height:var(--line-height-normal);color:var(--text-normal)}.inline-canvas-native > .workspace-leaf-content{height:100%;width:100%;position:relative;display:flex;flex-direction:column}.inline-canvas-native .view-content{height:100%;width:100%;padding:0;overflow:hidden;flex:1}.inline-canvas-native .view-header,.inline-canvas-native .canvas-card-menu,.inline-canvas-native .canvas-controls{display:none!important}.inline-canvas-native .canvas-wrapper{height:100%;width:100%;font-size:var(--font-text-size,16px);text-align:left}.inline-canvas-preview-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0;font-size:13px}.inline-canvas-preview-error{color:var(--text-error,#b42318)}.slides-container .inline-canvas-native h1{font-size:var(--h1-size)}.slides-container .inline-canvas-native h2{font-size:var(--h2-size)}.slides-container .inline-canvas-native h3{font-size:var(--h3-size)}.slides-container .inline-canvas-native h4{font-size:var(--h4-size)}.slides-container .inline-canvas-native h5{font-size:var(--h5-size)}.slides-container .inline-canvas-native h6{font-size:var(--h6-size)}.slides-container .inline-canvas-native :is(h1,h2,h3,h4,h5,h6){text-transform:none;color:var(--text-normal);font-family:var(--font-text)}';
     root.appendChild(style);
     const picture = doc.createElement('div');
+    picture.className = 'inline-canvas-native';
     root.appendChild(picture);
     const toolbar = doc.createElement('div');
     toolbar.className = 'inline-canvas-preview-toolbar';
@@ -120,7 +122,19 @@ module.exports = class InlineCanvas extends Plugin {
     edit.className = 'inline-canvas-edit'; edit.textContent = '编辑流程图';
     const status = doc.createElement('span');
     toolbar.append(edit, status); root.appendChild(toolbar);
-    const preview = { embed, root, picture, status, src, sourcePath, generation: 0, id: 'ic' + ++this.previewCounter };
+    const preview = { embed, root, picture, status, src, sourcePath, generation: 0 };
+    for (const [label, action] of [
+      ['放大', p => p.canvas?.zoomBy(0.25)],
+      ['缩小', p => p.canvas?.zoomBy(-0.25)],
+      ['原始大小', p => p.canvas?.setViewport(p.canvas.x, p.canvas.y, 0)],
+      ['适应画面', p => p.canvas?.zoomToFit()]
+    ]) {
+      const button = doc.createElement('button'); button.textContent = label;
+      button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); action(preview); });
+      toolbar.insertBefore(button, status);
+    }
+    // Do not let the native editor's drop handlers import or change files in previews.
+    for (const type of ['drop', 'dragover']) picture.addEventListener(type, event => { event.preventDefault(); event.stopImmediatePropagation(); }, true);
     edit.addEventListener('click', event => {
       event.preventDefault(); event.stopPropagation();
       const file = this.resolvePreviewFile(preview);
@@ -152,50 +166,111 @@ module.exports = class InlineCanvas extends Plugin {
       const file = this.resolvePreviewFile(preview);
       if (!file) throw new Error('找不到白板文件');
       const data = JSON.parse(await this.app.vault.cachedRead(file));
-      const texts = new Map();
-      await Promise.all((data.nodes || []).filter(node => node.type === 'file').map(async node => {
-        const target = this.app.vault.getAbstractFileByPath(node.file) || this.app.metadataCache.getFirstLinkpathDest(node.file, file.path);
-        if (target instanceof TFile && target.extension === 'md') {
-          let text = await this.app.vault.cachedRead(target);
-          // Respect note-card heading/block references when metadata is available.
-          if (node.subpath) {
-            const cache = this.app.metadataCache.getFileCache(target);
-            if (node.subpath.startsWith('#^')) {
-              const block = cache?.blocks?.[node.subpath.slice(2)];
-              text = block ? text.slice(block.position.start.offset, block.position.end.offset) : node.file + node.subpath;
-            } else {
-              const headings = cache?.headings || [];
-              const index = headings.findIndex(h => h.heading === node.subpath.slice(1));
-              const heading = headings[index];
-              const next = headings.slice(index + 1).find(h => h.level <= heading?.level);
-              text = heading ? text.slice(heading.position.start.offset, next?.position.start.offset) : node.file + node.subpath;
-            }
-          }
-          texts.set(node.id, text);
-        }
-      }));
-      const svg = renderCanvasSvg(data, texts, preview.id, preview.src.split('#')[1]);
       if (generation !== preview.generation || !this.previews.has(preview.embed)) return;
-      const parser = new preview.embed.ownerDocument.defaultView.DOMParser();
-      const parsed = parser.parseFromString(svg, 'image/svg+xml');
-      if (parsed.querySelector('parsererror')) throw new Error('白板预览无法生成');
-      preview.picture.replaceChildren(preview.embed.ownerDocument.importNode(parsed.documentElement, true));
       preview.embed.classList.add('inline-canvas-full-preview');
+      preview.picture.style.display = '';
+      if (!preview.canvas) this.createNativePreview(preview, file);
+      preview.view.file = file;
+      const focusId = preview.src.split('#')[1];
+      const filtered = focusCanvasData(data, focusId);
+      preview.canvas.setData(filtered);
+      preview.canvas.setReadonly(true);
+      preview.canvas.onResize();
+      if (!preview.positioned) this.positionNativePreview(preview);
+      preview.canvas.requestFrame();
       preview.status.textContent = ''; preview.status.className = '';
     } catch (error) {
       if (generation !== preview.generation || !this.previews.has(preview.embed)) return;
       preview.status.textContent = '预览失败：' + error.message;
       preview.status.className = 'inline-canvas-preview-error';
       // Restore native preview rather than silently showing an outdated drawing.
-      preview.picture.replaceChildren();
+      this.destroyNativePreview(preview);
+      preview.picture.style.display = 'none';
       preview.embed.classList.remove('inline-canvas-full-preview');
     }
   }
 
   removePreview(preview) {
     ++preview.generation;
+    this.destroyNativePreview(preview);
     preview.root.remove();
     preview.embed.classList.remove('inline-canvas-full-preview');
+  }
+
+  createNativePreview(preview, file) {
+    // The official view factory is internal. Guard it instead of relying on a
+    // minified class name or globally patching Canvas/editor prototypes.
+    const factory = this.app.viewRegistry?.getViewCreatorByType?.('canvas');
+    const reference = this.app.workspace.getMostRecentLeaf();
+    if (!factory || !reference) throw new Error('当前版本无法创建原生 Canvas 预览');
+    const leaf = Object.create(reference);
+    Object.defineProperties(leaf, {
+      containerEl: { value: preview.embed.ownerDocument.createElement('div'), writable: true },
+      updateHeader: { value: () => {} },
+      detach: { value: () => {} }
+    });
+    let view;
+    try {
+      view = factory(leaf);
+      preview.view = view;
+      leaf.view = view;
+      const canvas = view.canvas;
+      if (!canvas || ['setData', 'setReadonly', 'setViewport', 'onResize', 'requestFrame', 'unload'].some(key => typeof canvas[key] !== 'function')) {
+        throw new Error('Canvas 内部接口不兼容');
+      }
+      preview.canvas = canvas;
+      // This detached view never becomes a workspace tab and cannot save files.
+      view.file = file;
+      view.requestSave = () => {};
+      view.save = async () => {};
+      view.saveLocalData = () => {};
+      view.getLocalData = () => ({ readonly: true });
+      const setReadonly = canvas.setReadonly.bind(canvas);
+      canvas.setReadonly = () => setReadonly(true);
+      Object.defineProperty(canvas, 'zoomBreakpoint', { configurable: true, get: () => -Infinity });
+      preview.picture.appendChild(view.containerEl);
+      // Load render children, but omit onOpen() and the global Canvas keyboard
+      // hooks: this is a preview, not another active workspace editor.
+      view.load();
+      canvas.setReadonly(true);
+      const Resize = preview.embed.ownerDocument.defaultView.ResizeObserver;
+      preview.resizeObserver = new Resize(() => {
+        if (!preview.canvas || !preview.embed.isConnected) return;
+        preview.canvas.onResize();
+        if (!preview.positioned) this.positionNativePreview(preview);
+      });
+      preview.resizeObserver.observe(preview.picture);
+    } catch (error) {
+      this.destroyNativePreview(preview);
+      throw error;
+    }
+  }
+
+  positionNativePreview(preview) {
+    const canvas = preview.canvas;
+    const bounds = preview.picture.getBoundingClientRect();
+    const nodes = [...canvas.nodes.values()];
+    if (!bounds.width || !bounds.height || !nodes.length) return;
+    const minX = Math.min(...nodes.map(n => n.x));
+    const minY = Math.min(...nodes.map(n => n.y));
+    const maxX = Math.max(...nodes.map(n => n.x + n.width));
+    const maxY = Math.max(...nodes.map(n => n.y + n.height));
+    // Avoid fitting a wide diagram so aggressively that its text is unreadable.
+    const scale = Math.max(0.85, Math.min(1, bounds.width / ((maxX - minX) * 1.1), bounds.height / ((maxY - minY) * 1.1)));
+    const x = (maxX - minX) * scale > bounds.width ? minX - 24 + bounds.width / (2 * scale) : (minX + maxX) / 2;
+    canvas.setViewport(x, (minY + maxY) / 2, Math.log2(scale));
+    preview.positioned = true;
+  }
+
+  destroyNativePreview(preview) {
+    preview.resizeObserver?.disconnect();
+    preview.resizeObserver = null;
+    preview.canvas?.unload();
+    preview.view?.unload();
+    preview.view?.containerEl.remove();
+    preview.canvas = null;
+    preview.view = null;
+    preview.positioned = false;
   }
 
   report(error) {
@@ -247,80 +322,17 @@ module.exports = class InlineCanvas extends Plugin {
   }
 };
 
-// Standalone SVG uses text elements, not foreignObject: it also works in Slides.
-function renderCanvasSvg(data, texts = new Map(), prefix = 'ic', focusId) {
-  if (!data || !Array.isArray(data.nodes)) throw new Error('白板数据缺少 nodes 数组');
-  const escape = value => String(value ?? '').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '')
-    .replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[char]));
-  prefix = String(prefix).replace(/[^a-zA-Z0-9_-]/g, '') || 'ic';
-  let nodes = data.nodes.filter(n => n && ['x', 'y', 'width', 'height'].every(key => Number.isFinite(n[key])) && n.width > 0 && n.height > 0);
-  if (focusId) {
-    const focus = nodes.find(n => n.id === focusId);
-    if (!focus) throw new Error('找不到指定的白板卡片');
-    nodes = focus.type === 'group' ? nodes.filter(n => n === focus || n.x >= focus.x && n.y >= focus.y && n.x + n.width <= focus.x + focus.width && n.y + n.height <= focus.y + focus.height) : [focus];
+function focusCanvasData(data, focusId) {
+  if (!data || typeof data !== 'object' || (data.nodes != null && !Array.isArray(data.nodes)) || (data.edges != null && !Array.isArray(data.edges))) {
+    throw new Error('白板数据格式无效');
   }
-  if (!nodes.length) return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 100" role="img" aria-label="空白流程图"><rect width="320" height="100" fill="#f8fafc"/><text x="20" y="55" font-size="16" fill="#334155">空白流程图</text></svg>';
-  const palette = { '1': '#dc2626', '2': '#ea580c', '3': '#ca8a04', '4': '#16a34a', '5': '#0891b2', '6': '#9333ea' };
-  const color = value => palette[value] || (/^#[0-9a-fA-F]{6}$/.test(value || '') ? value : '#64748b');
-  const minX = Math.min(...nodes.map(n => n.x)) - 60;
-  const minY = Math.min(...nodes.map(n => n.y)) - 60;
-  const width = Math.max(...nodes.map(n => n.x + n.width)) - minX + 60;
-  const height = Math.max(...nodes.map(n => n.y + n.height)) - minY + 60;
-  const nodeMap = new Map(nodes.map(n => [n.id, n]));
-  const wrap = (text, available) => {
-    const lines = [];
-    for (const paragraph of String(text ?? '').replace(/\r/g, '').split('\n')) {
-      let line = '', units = 0;
-      for (const character of paragraph) {
-        const size = character.codePointAt(0) > 255 ? 16 : 8.5;
-        if (line && units + size > available) { lines.push(line); line = ''; units = 0; }
-        line += character; units += size;
-      }
-      lines.push(line);
-    }
-    return lines;
-  };
-  const textMarkup = (text, x, y, available, rows, clip = '') => {
-    const lines = wrap(text, Math.max(16, available));
-    const visible = lines.slice(0, rows);
-    if (lines.length > rows && visible.length) visible[visible.length - 1] = visible[visible.length - 1].slice(0, -1) + '…';
-    return `<text x="${x}" y="${y}" fill="#1e293b" font-size="16" font-family="system-ui, sans-serif"${clip ? ` clip-path="url(#${clip})"` : ''}>${visible.map((line, i) => `<tspan x="${x}" dy="${i ? 22 : 0}">${escape(line)}</tspan>`).join('')}</text>`;
-  };
-  const anchor = (n, side) => ({
-    top: [n.x + n.width / 2, n.y, 0, -1], bottom: [n.x + n.width / 2, n.y + n.height, 0, 1],
-    left: [n.x, n.y + n.height / 2, -1, 0], right: [n.x + n.width, n.y + n.height / 2, 1, 0]
-  }[side] || [n.x + n.width / 2, n.y + n.height, 0, 1]);
-  const defs = [], groups = [], cards = [], edges = [], labels = [];
-  nodes.forEach((n, i) => {
-    const stroke = color(n.color), clip = prefix + '-clip-' + i;
-    const label = n.type === 'text' ? n.text : n.type === 'group' ? n.label : n.type === 'file' ? (texts.get(n.id) ?? '附件：' + (n.file || '')) : n.url || '';
-    if (n.type === 'group') {
-      groups.push(`<rect x="${n.x}" y="${n.y}" width="${n.width}" height="${n.height}" rx="8" fill="${n.color ? stroke : '#f1f5f9'}" fill-opacity="0.12" stroke="${stroke}" stroke-width="2"/>` + textMarkup(label, n.x + 12, n.y - 12, n.width - 24, 1));
-    } else {
-      defs.push(`<clipPath id="${clip}"><rect x="${n.x + 10}" y="${n.y + 10}" width="${Math.max(1, n.width - 20)}" height="${Math.max(1, n.height - 20)}"/></clipPath>`);
-      cards.push(`<g><title>${escape(label)}</title><rect x="${n.x}" y="${n.y}" width="${n.width}" height="${n.height}" rx="8" fill="#ffffff" stroke="${stroke}" stroke-width="2"/>` + textMarkup(label, n.x + 14, n.y + 30, n.width - 28, Math.max(1, Math.floor((n.height - 20) / 22)), clip) + '</g>');
-    }
-  });
-  for (const [index, edge] of (Array.isArray(data.edges) ? data.edges : []).entries()) {
-    if (!edge) continue;
-    const from = nodeMap.get(edge.fromNode), to = nodeMap.get(edge.toNode);
-    if (!from || !to) continue;
-    const a = anchor(from, edge.fromSide || 'bottom'), b = anchor(to, edge.toSide || 'top');
-    const distance = Math.max(40, Math.min(160, Math.hypot(b[0] - a[0], b[1] - a[1]) / 2));
-    const p = [a[0] + a[2] * distance, a[1] + a[3] * distance];
-    const q = [b[0] + b[2] * distance, b[1] + b[3] * distance];
-    const stroke = color(edge.color), marker = prefix + '-arrow-' + index;
-    defs.push(`<marker id="${marker}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="${stroke}"/></marker>`);
-    edges.push(`<path d="M ${a[0]} ${a[1]} C ${p[0]} ${p[1]}, ${q[0]} ${q[1]}, ${b[0]} ${b[1]}" fill="none" stroke="${stroke}" stroke-width="2"${edge.fromEnd === 'arrow' ? ` marker-start="url(#${marker})"` : ''}${edge.toEnd !== 'none' ? ` marker-end="url(#${marker})"` : ''}/>`);
-    if (edge.label) {
-      const x = (a[0] + 3 * p[0] + 3 * q[0] + b[0]) / 8;
-      const y = (a[1] + 3 * p[1] + 3 * q[1] + b[1]) / 8;
-      const lines = wrap(edge.label, 200), w = Math.min(224, Math.max(...lines.map(l => [...l].reduce((s, c) => s + (c.codePointAt(0) > 255 ? 16 : 8.5), 0))) + 24);
-      const h = Math.min(3, lines.length) * 22 + 10;
-      labels.push(`<rect x="${x - w / 2}" y="${y - h / 2}" width="${w}" height="${h}" rx="4" fill="#f8fafc"/>` + textMarkup(edge.label, x - w / 2 + 12, y - h / 2 + 22, w - 24, 3));
-    }
-  }
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${minX} ${minY} ${width} ${height}" role="img" aria-label="包含卡片文字的流程图"><rect x="${minX}" y="${minY}" width="${width}" height="${height}" rx="8" fill="#f8fafc"/><defs>${defs.join('')}</defs>${groups.join('')}${edges.join('')}${cards.join('')}${labels.join('')}</svg>`;
+  const nodes = data.nodes || [], edges = data.edges || [];
+  if (!focusId) return { ...data, nodes, edges };
+  const focus = nodes.find(node => node.id === focusId);
+  if (!focus) throw new Error('找不到指定的白板卡片');
+  const selected = focus.type === 'group' ? nodes.filter(node => node === focus || node.x >= focus.x && node.y >= focus.y && node.x + node.width <= focus.x + focus.width && node.y + node.height <= focus.y + focus.height) : [focus];
+  const ids = new Set(selected.map(node => node.id));
+  return { ...data, nodes: selected, edges: edges.filter(edge => ids.has(edge.fromNode) && ids.has(edge.toNode)) };
 }
 
-module.exports.renderCanvasSvg = renderCanvasSvg;
+module.exports.focusCanvasData = focusCanvasData;
