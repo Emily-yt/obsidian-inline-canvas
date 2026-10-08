@@ -54,7 +54,7 @@ module.exports = class InlineCanvas extends Plugin {
     const original = editor.getValue();
     let file;
     try {
-      const folder = normalizePath((note.parent && note.parent.path !== '/' ? note.parent.path + '/' : '') + '流程图');
+      const folder = normalizePath((note.parent && note.parent.path !== '/' ? note.parent.path + '/' : '') + 'Flowcharts');
       if (!this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder);
       const stamp = Date.now().toString(36);
       let path = normalizePath(folder + '/' + note.basename + '-流程图-' + stamp + '.canvas');
@@ -63,15 +63,8 @@ module.exports = class InlineCanvas extends Plugin {
         path = normalizePath(folder + '/' + note.basename + '-流程图-' + stamp + '-' + suffix++ + '.canvas');
       }
       const canvas = {
-        nodes: [
-          { id: 'start', type: 'text', text: '开始', x: 0, y: 0, width: 220, height: 100 },
-          { id: 'step', type: 'text', text: '处理步骤\n\n双击修改文字；拖动卡片边缘连接下一步。', x: 0, y: 200, width: 220, height: 140 },
-          { id: 'end', type: 'text', text: '结束', x: 0, y: 440, width: 220, height: 100 }
-        ],
-        edges: [
-          { id: 'edge1', fromNode: 'start', fromSide: 'bottom', toNode: 'step', toSide: 'top', toEnd: 'arrow' },
-          { id: 'edge2', fromNode: 'step', fromSide: 'bottom', toNode: 'end', toSide: 'top', toEnd: 'arrow' }
-        ]
+        nodes: [{ id: 'start', type: 'text', text: '请在此输入内容', x: 0, y: 0, width: 220, height: 100 }],
+        edges: []
       };
       file = await this.app.vault.create(path, JSON.stringify(canvas, null, 2));
       // Do not insert into an editor that changed while the file was being created.
