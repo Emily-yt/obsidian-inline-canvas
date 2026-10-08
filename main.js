@@ -5,12 +5,15 @@ module.exports = class InlineCanvas extends Plugin {
     this.busy = false;
     this.previews = new Map();
     this.observers = new Map();
+    this.autoFitWrites = new Set();
+    this.autoFitTimers = new Map();
 
     this.previewDisposed = false;
     this.register(() => {
       this.previewDisposed = true;
       clearTimeout(this.scanTimer);
       clearTimeout(this.refreshTimer);
+      for (const timer of this.autoFitTimers.values()) clearTimeout(timer);
       for (const observer of this.observers.values()) observer.disconnect();
       for (const preview of this.previews.values()) this.removePreview(preview);
       this.previews.clear();
@@ -25,12 +28,24 @@ module.exports = class InlineCanvas extends Plugin {
         .onClick(() => this.insertCanvas(editor, info)));
     }));
     this.registerMarkdownPostProcessor((element, context) => this.scanPreviewRoot(element, context.sourcePath));
-    this.registerEvent(this.app.vault.on('modify', () => this.queuePreviewRefresh()));
+    this.registerEvent(this.app.vault.on('modify', file => {
+      this.queuePreviewRefresh();
+      if (file.extension === 'canvas') this.queueOpenCanvasFit(file);
+    }));
     this.registerEvent(this.app.vault.on('rename', () => this.queuePreviewRefresh()));
     this.registerEvent(this.app.vault.on('delete', () => this.queuePreviewRefresh()));
     this.registerEvent(this.app.workspace.on('layout-change', () => this.startPreviewObservers()));
     this.registerEvent(this.app.workspace.on('window-open', () => this.startPreviewObservers()));
     this.app.workspace.onLayoutReady(() => this.startPreviewObservers());
+    this.addCommand({
+      id: 'fit-text-cards', name: '根据内容调整文字卡片大小',
+      checkCallback: checking => {
+        const file = this.app.workspace.getActiveFile();
+        if (file?.extension !== 'canvas') return false;
+        if (!checking) this.queueOpenCanvasFit(file);
+        return true;
+      }
+    });
     this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => {
       if (file instanceof TFile && file.extension === 'canvas') {
         menu.addItem(item => item.setTitle('在旁边编辑流程图').setIcon('pencil')
@@ -65,6 +80,10 @@ module.exports = class InlineCanvas extends Plugin {
     this.observers.set(doc, observer);
     this.registerDomEvent(doc, 'load', event => {
       if (event.target?.tagName === 'IFRAME') this.observePreviewFrame(event.target);
+    }, true);
+    this.registerDomEvent(doc, 'focusout', () => {
+      const file = this.app.workspace.getActiveFile();
+      if (file?.extension === 'canvas') this.queueOpenCanvasFit(file);
     }, true);
     this.scanPreviewRoot(doc.body);
   }
@@ -111,7 +130,7 @@ module.exports = class InlineCanvas extends Plugin {
     root.className = 'inline-canvas-preview';
     // Carry styles with the preview so the same renderer works in Slides documents.
     const style = doc.createElement('style');
-    style.textContent = '.inline-canvas-full-preview > :not(.inline-canvas-preview){display:none!important}.inline-canvas-preview{display:block;width:100%;text-align:left}.inline-canvas-native{height:440px;position:relative;overflow:hidden;border-radius:var(--radius-m);border:1px solid var(--background-modifier-border);background:var(--background-primary);font-size:var(--font-text-size,16px);font-family:var(--font-text);line-height:var(--line-height-normal);color:var(--text-normal)}.inline-canvas-native > .workspace-leaf-content{height:100%;width:100%;position:relative;display:flex;flex-direction:column}.inline-canvas-native .view-content{height:100%;width:100%;padding:0;overflow:hidden;flex:1}.inline-canvas-native .view-header,.inline-canvas-native .canvas-card-menu,.inline-canvas-native .canvas-controls{display:none!important}.inline-canvas-native .canvas-wrapper{height:100%;width:100%;font-size:var(--font-text-size,16px);text-align:left}.inline-canvas-preview-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0;font-size:13px}.inline-canvas-preview-error{color:var(--text-error,#b42318)}.slides-container .inline-canvas-native h1{font-size:var(--h1-size)}.slides-container .inline-canvas-native h2{font-size:var(--h2-size)}.slides-container .inline-canvas-native h3{font-size:var(--h3-size)}.slides-container .inline-canvas-native h4{font-size:var(--h4-size)}.slides-container .inline-canvas-native h5{font-size:var(--h5-size)}.slides-container .inline-canvas-native h6{font-size:var(--h6-size)}.slides-container .inline-canvas-native :is(h1,h2,h3,h4,h5,h6){text-transform:none;color:var(--text-normal);font-family:var(--font-text)}';
+    style.textContent = '.inline-canvas-full-preview > :not(.inline-canvas-preview){display:none!important}.inline-canvas-preview{display:block;width:100%;text-align:left}.inline-canvas-native{height:200px;max-width:100%;position:relative;overflow:hidden;border-radius:var(--radius-m);border:1px solid var(--background-modifier-border);background:var(--background-primary);font-size:var(--font-text-size,16px);font-family:var(--font-text);line-height:var(--line-height-normal);color:var(--text-normal)}.inline-canvas-native > .workspace-leaf-content{height:100%;width:100%;position:relative;display:flex;flex-direction:column}.inline-canvas-native .view-content{height:100%;width:100%;padding:0;overflow:hidden;flex:1}.inline-canvas-native .view-header,.inline-canvas-native .canvas-card-menu,.inline-canvas-native .canvas-controls{display:none!important}.inline-canvas-native .canvas-wrapper{height:100%;width:100%;font-size:var(--font-text-size,16px);text-align:left}.inline-canvas-preview-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0;font-size:13px}.inline-canvas-preview-error{color:var(--text-error,#b42318)}.slides-container .inline-canvas-native h1{font-size:var(--h1-size)}.slides-container .inline-canvas-native h2{font-size:var(--h2-size)}.slides-container .inline-canvas-native h3{font-size:var(--h3-size)}.slides-container .inline-canvas-native h4{font-size:var(--h4-size)}.slides-container .inline-canvas-native h5{font-size:var(--h5-size)}.slides-container .inline-canvas-native h6{font-size:var(--h6-size)}.slides-container .inline-canvas-native :is(h1,h2,h3,h4,h5,h6){text-transform:none;color:var(--text-normal);font-family:var(--font-text)}';
     root.appendChild(style);
     const picture = doc.createElement('div');
     picture.className = 'inline-canvas-native';
@@ -127,7 +146,8 @@ module.exports = class InlineCanvas extends Plugin {
       ['放大', p => p.canvas?.zoomBy(0.25)],
       ['缩小', p => p.canvas?.zoomBy(-0.25)],
       ['原始大小', p => p.canvas?.setViewport(p.canvas.x, p.canvas.y, 0)],
-      ['适应画面', p => p.canvas?.zoomToFit()]
+      ['适应画面', p => p.canvas?.zoomToFit()],
+      ['自动调整大小', p => { p.positioned = false; this.queueNativeLayout(p); }]
     ]) {
       const button = doc.createElement('button'); button.textContent = label;
       button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); action(preview); });
@@ -178,6 +198,7 @@ module.exports = class InlineCanvas extends Plugin {
       preview.canvas.onResize();
       if (!preview.positioned) this.positionNativePreview(preview);
       preview.canvas.requestFrame();
+      this.queueNativeLayout(preview);
       preview.status.textContent = ''; preview.status.className = '';
     } catch (error) {
       if (generation !== preview.generation || !this.previews.has(preview.embed)) return;
@@ -238,8 +259,11 @@ module.exports = class InlineCanvas extends Plugin {
         if (!preview.canvas || !preview.embed.isConnected) return;
         preview.canvas.onResize();
         if (!preview.positioned) this.positionNativePreview(preview);
+        this.queueNativeLayout(preview);
       });
-      preview.resizeObserver.observe(preview.picture);
+      preview.resizeObserver.observe(preview.embed.parentElement || preview.picture);
+      preview.contentObserver = new preview.embed.ownerDocument.defaultView.MutationObserver(() => this.queueNativeLayout(preview));
+      preview.contentObserver.observe(preview.picture, { childList: true, subtree: true, characterData: true });
     } catch (error) {
       this.destroyNativePreview(preview);
       throw error;
@@ -263,6 +287,9 @@ module.exports = class InlineCanvas extends Plugin {
   }
 
   destroyNativePreview(preview) {
+    clearTimeout(preview.layoutTimer);
+    preview.contentObserver?.disconnect();
+    preview.contentObserver = null;
     preview.resizeObserver?.disconnect();
     preview.resizeObserver = null;
     preview.canvas?.unload();
@@ -271,6 +298,101 @@ module.exports = class InlineCanvas extends Plugin {
     preview.canvas = null;
     preview.view = null;
     preview.positioned = false;
+  }
+
+  queueNativeLayout(preview) {
+    clearTimeout(preview.layoutTimer);
+    if (this.previewDisposed || !preview.canvas) return;
+    preview.layoutTimer = setTimeout(() => {
+      if (!preview.canvas || !preview.embed.isConnected || this.previewDisposed) return;
+      this.fitNativeTextCards(preview.canvas, this.resolvePreviewFile(preview))
+        .then(() => this.sizeNativePreview(preview))
+        .catch(error => { preview.status.textContent = '自动调整失败：' + error.message; });
+    }, 120);
+  }
+
+  queueOpenCanvasFit(file) {
+    if (this.previewDisposed || this.autoFitWrites.has(file.path)) return;
+    clearTimeout(this.autoFitTimers.get(file.path));
+    this.autoFitTimers.set(file.path, setTimeout(() => {
+      this.autoFitTimers.delete(file.path);
+      if (this.previewDisposed) return;
+      for (const leaf of this.app.workspace.getLeavesOfType('canvas')) {
+        if (leaf.view.file?.path === file.path && leaf.view.canvas) {
+          this.fitNativeTextCards(leaf.view.canvas, file).catch(error => this.report(error));
+          break;
+        }
+      }
+    }, 250));
+  }
+
+  async fitNativeTextCards(canvas, file) {
+    if (!file || this.autoFitWrites.has(file.path) || this.previewDisposed) return;
+    this.autoFitWrites.add(file.path);
+    try {
+      const sizes = [];
+      for (const node of canvas.nodes.values()) {
+        if (typeof node.text !== 'string' || typeof node.resize !== 'function') continue;
+        // Render even cards outside the viewport to measure their real Markdown.
+        if (!node.isAttached) node.attach();
+        if (!node.child) node.render();
+        const content = node.child?.previewMode?.renderer?.previewEl;
+        if (!content || !content.clientWidth || !content.clientHeight || !content.querySelector('.markdown-preview-section')) continue;
+        const original = node.height;
+        for (let attempt = 0; attempt < 5; attempt++) {
+          const visibleHeight = content.clientHeight;
+          const previousHeight = content.style.height;
+          let naturalHeight;
+          try { content.style.height = '1px'; naturalHeight = content.scrollHeight; }
+          finally { content.style.height = previousHeight; }
+          if (!Number.isFinite(naturalHeight) || naturalHeight <= 1) break;
+          const height = Math.max(64, Math.ceil(node.height + naturalHeight - visibleHeight + 1));
+          if (Math.abs(height - node.height) <= 1) break;
+          node.resize({ width: node.width, height });
+          node.render();
+        }
+        if (node.height !== original) sizes.push({ id: node.id, text: node.text, width: node.width, original, height: node.height });
+      }
+      if (!sizes.length || this.previewDisposed) return;
+      // Atomic merge: never overwrite newer text, manually changed dimensions,
+      // node positions, connection lines, or another editor's concurrent save.
+      await this.app.vault.process(file, contents => {
+        const data = JSON.parse(contents);
+        const changes = new Map(sizes.map(size => [size.id, size]));
+        let changed = false;
+        for (const node of data.nodes || []) {
+          const size = changes.get(node.id);
+          if (size && node.type === 'text' && node.text === size.text && node.width === size.width && node.height === size.original) {
+            node.height = size.height;
+            changed = true;
+          }
+        }
+        if (changed) preventCardOverlaps(data.nodes, sizes);
+        return changed ? JSON.stringify(data, null, 2) : contents;
+      });
+    } finally { this.autoFitWrites.delete(file.path); }
+  }
+
+  sizeNativePreview(preview) {
+    if (!preview.canvas || this.previewDisposed) return;
+    const nodes = [...preview.canvas.nodes.values()];
+    if (!nodes.length) { preview.picture.style.height = '100px'; return; }
+    const width = Math.max(...nodes.map(n => n.x + n.width)) - Math.min(...nodes.map(n => n.x));
+    const height = Math.max(...nodes.map(n => n.y + n.height)) - Math.min(...nodes.map(n => n.y));
+    const available = preview.embed.parentElement?.clientWidth || preview.embed.clientWidth || 600;
+    const desiredWidth = Math.max(240, Math.min(available, width + 48));
+    const scale = Math.max(0.85, Math.min(1, (desiredWidth - 48) / Math.max(1, width)));
+    const desiredHeight = Math.max(112, Math.ceil(height * scale + 48));
+    const maxHeight = Math.max(240, Math.floor(preview.embed.ownerDocument.defaultView.innerHeight * 0.75));
+    const cssWidth = Math.round(desiredWidth) + 'px';
+    const cssHeight = Math.min(maxHeight, desiredHeight) + 'px';
+    if (preview.picture.style.width !== cssWidth || preview.picture.style.height !== cssHeight) {
+      preview.picture.style.width = cssWidth;
+      preview.picture.style.height = cssHeight;
+      preview.canvas.onResize();
+      preview.positioned = false;
+    }
+    if (!preview.positioned) this.positionNativePreview(preview);
   }
 
   report(error) {
@@ -336,3 +458,30 @@ function focusCanvasData(data, focusId) {
 }
 
 module.exports.focusCanvasData = focusCanvasData;
+
+function preventCardOverlaps(nodes = [], sizes = []) {
+  const grown = sizes.filter(size => size.height > size.original).map(size => {
+    const node = nodes.find(n => n.id === size.id);
+    return node?.height === size.height ? { node, oldBottom: node.y + size.original } : null;
+  }).filter(Boolean);
+  // Move downstream cards only when newly grown content would cover them.
+  // Existing intentional overlaps and horizontal arrangements are preserved.
+  for (let pass = 0; pass < nodes.length; pass++) {
+    let moved = false;
+    for (const { node, oldBottom } of grown) {
+      for (const next of nodes) {
+        if (next === node || next.type === 'group' || next.y < oldBottom) continue;
+        if (next.x >= node.x + node.width || next.x + next.width <= node.x) continue;
+        const target = node.y + node.height + 24;
+        if (next.y >= target) continue;
+        const originalBottom = next.y + next.height;
+        next.y = target;
+        if (!grown.some(entry => entry.node === next)) grown.push({ node: next, oldBottom: originalBottom });
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+}
+
+module.exports.preventCardOverlaps = preventCardOverlaps;
