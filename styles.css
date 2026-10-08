@@ -1,5 +1,4 @@
-.internal-embed .inline-canvas-edit {
-  display: block;
-  margin: 8px 0;
+.inline-canvas-preview-toolbar .inline-canvas-edit {
+  margin: 0;
   cursor: pointer;
 }
