@@ -240,6 +240,11 @@ module.exports = class InlineCanvas extends Plugin {
         throw new Error('Canvas 内部接口不兼容');
       }
       preview.canvas = canvas;
+      const requestFrame = canvas.requestFrame.bind(canvas);
+      canvas.requestFrame = (...args) => {
+        this.constrainNativeViewport(preview);
+        return requestFrame(...args);
+      };
       // This detached view never becomes a workspace tab and cannot save files.
       view.file = file;
       view.requestSave = () => {};
@@ -268,6 +273,24 @@ module.exports = class InlineCanvas extends Plugin {
       this.destroyNativePreview(preview);
       throw error;
     }
+  }
+
+  constrainNativeViewport(preview) {
+    const canvas = preview.canvas;
+    const nodes = canvas ? [...canvas.nodes.values()] : [];
+    const bounds = preview.picture.getBoundingClientRect();
+    if (!nodes.length || !bounds.width || !bounds.height) return;
+    const scale = Math.pow(2, canvas.zoom || 0);
+    const halfWidth = bounds.width / (2 * scale), halfHeight = bounds.height / (2 * scale);
+    const minX = Math.min(...nodes.map(n => n.x)) - 24;
+    const maxX = Math.max(...nodes.map(n => n.x + n.width)) + 24;
+    const minY = Math.min(...nodes.map(n => n.y)) - 24;
+    const maxY = Math.max(...nodes.map(n => n.y + n.height)) + 24;
+    const clamp = (value, min, max, half) => max - min <= 2 * half ? (min + max) / 2 : Math.max(min + half, Math.min(max - half, value));
+    canvas.x = clamp(canvas.x, minX, maxX, halfWidth);
+    canvas.y = clamp(canvas.y, minY, maxY, halfHeight);
+    if (Number.isFinite(canvas.tx)) canvas.tx = clamp(canvas.tx, minX, maxX, halfWidth);
+    if (Number.isFinite(canvas.ty)) canvas.ty = clamp(canvas.ty, minY, maxY, halfHeight);
   }
 
   positionNativePreview(preview) {
@@ -338,7 +361,21 @@ module.exports = class InlineCanvas extends Plugin {
         if (!node.child) node.render();
         const content = node.child?.previewMode?.renderer?.previewEl;
         if (!content || !content.clientWidth || !content.clientHeight || !content.querySelector('.markdown-preview-section')) continue;
-        const original = node.height;
+        const original = node.height, originalWidth = node.width;
+        const section = content.querySelector('.markdown-preview-section');
+        if (section?.getBoundingClientRect) {
+          const old = section.style.cssText;
+          let naturalWidth;
+          try {
+            section.style.width = 'max-content';
+            section.style.maxWidth = 'none';
+            naturalWidth = section.getBoundingClientRect().width;
+          } finally { section.style.cssText = old; }
+          if (Number.isFinite(naturalWidth) && naturalWidth > 0) {
+            const width = Math.max(180, Math.min(560, Math.ceil(naturalWidth + node.width - content.clientWidth + 24)));
+            if (width !== node.width) { node.resize({ width, height: node.height }); node.render(); }
+          }
+        }
         for (let attempt = 0; attempt < 5; attempt++) {
           const visibleHeight = content.clientHeight;
           const previousHeight = content.style.height;
@@ -351,7 +388,7 @@ module.exports = class InlineCanvas extends Plugin {
           node.resize({ width: node.width, height });
           node.render();
         }
-        if (node.height !== original) sizes.push({ id: node.id, text: node.text, width: node.width, original, height: node.height });
+        if (node.height !== original || node.width !== originalWidth) sizes.push({ id: node.id, text: node.text, width: node.width, originalWidth, original, height: node.height });
       }
       if (!sizes.length || this.previewDisposed) return;
       // Atomic merge: never overwrite newer text, manually changed dimensions,
@@ -362,8 +399,9 @@ module.exports = class InlineCanvas extends Plugin {
         let changed = false;
         for (const node of data.nodes || []) {
           const size = changes.get(node.id);
-          if (size && node.type === 'text' && node.text === size.text && node.width === size.width && node.height === size.original) {
+          if (size && node.type === 'text' && node.text === size.text && node.width === size.originalWidth && node.height === size.original) {
             node.height = size.height;
+            node.width = size.width;
             changed = true;
           }
         }
@@ -460,6 +498,26 @@ function focusCanvasData(data, focusId) {
 module.exports.focusCanvasData = focusCanvasData;
 
 function preventCardOverlaps(nodes = [], sizes = []) {
+  const widened = sizes.filter(size => size.width > size.originalWidth).map(size => {
+    const node = nodes.find(n => n.id === size.id);
+    return node?.width === size.width ? { node, oldRight: node.x + size.originalWidth } : null;
+  }).filter(Boolean);
+  for (let pass = 0; pass < nodes.length; pass++) {
+    let moved = false;
+    for (const { node, oldRight } of widened) {
+      for (const next of nodes) {
+        if (next === node || next.type === 'group' || next.x < oldRight) continue;
+        if (next.y >= node.y + node.height || next.y + next.height <= node.y) continue;
+        const target = node.x + node.width + 24;
+        if (next.x >= target) continue;
+        const originalRight = next.x + next.width;
+        next.x = target;
+        if (!widened.some(entry => entry.node === next)) widened.push({ node: next, oldRight: originalRight });
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
   const grown = sizes.filter(size => size.height > size.original).map(size => {
     const node = nodes.find(n => n.id === size.id);
     return node?.height === size.height ? { node, oldBottom: node.y + size.original } : null;
