@@ -1,4 +1,4 @@
-const { Plugin, Notice, TFile, normalizePath } = require('obsidian');
+const { Plugin, Notice, TFile, normalizePath, setIcon } = require('obsidian');
 
 module.exports = class InlineCanvas extends Plugin {
   onload() {
@@ -136,7 +136,7 @@ module.exports = class InlineCanvas extends Plugin {
     root.className = 'inline-canvas-preview';
     // Carry styles with the preview so the same renderer works in Slides documents.
     const style = doc.createElement('style');
-    style.textContent = '.inline-canvas-full-preview > :not(.inline-canvas-preview){display:none!important}.inline-canvas-preview{display:block;width:100%;text-align:left}.inline-canvas-native{height:200px;max-width:100%;position:relative;overflow:hidden;border-radius:var(--radius-m);border:1px solid var(--background-modifier-border);background:var(--background-primary);font-size:var(--font-text-size,16px);font-family:var(--font-text);line-height:var(--line-height-normal);color:var(--text-normal)}.inline-canvas-native > .workspace-leaf-content{height:100%;width:100%;position:relative;display:flex;flex-direction:column}.inline-canvas-native .view-content{height:100%;width:100%;padding:0;overflow:hidden;flex:1}.inline-canvas-native .view-header,.inline-canvas-native .canvas-card-menu,.inline-canvas-native .canvas-controls{display:none!important}.inline-canvas-native .canvas-wrapper{height:100%;width:100%;font-size:var(--font-text-size,16px);text-align:left}.inline-canvas-preview-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0;font-size:13px}.inline-canvas-preview-error{color:var(--text-error,#b42318)}.slides-container .inline-canvas-native h1{font-size:var(--h1-size)}.slides-container .inline-canvas-native h2{font-size:var(--h2-size)}.slides-container .inline-canvas-native h3{font-size:var(--h3-size)}.slides-container .inline-canvas-native h4{font-size:var(--h4-size)}.slides-container .inline-canvas-native h5{font-size:var(--h5-size)}.slides-container .inline-canvas-native h6{font-size:var(--h6-size)}.slides-container .inline-canvas-native :is(h1,h2,h3,h4,h5,h6){text-transform:none;color:var(--text-normal);font-family:var(--font-text)}';
+    style.textContent = '.inline-canvas-full-preview > :not(.inline-canvas-preview){display:none!important}.inline-canvas-preview{display:block;width:100%;text-align:left}.inline-canvas-native{height:200px;max-width:100%;position:relative;overflow:hidden;border-radius:var(--radius-m);border:1px solid var(--background-modifier-border);background:var(--background-primary);font-size:var(--font-text-size,16px);font-family:var(--font-text);line-height:var(--line-height-normal);color:var(--text-normal)}.inline-canvas-native > .workspace-leaf-content{height:100%;width:100%;position:relative;display:flex;flex-direction:column}.inline-canvas-native .view-content{height:100%;width:100%;padding:0;overflow:hidden;flex:1}.inline-canvas-native .view-header,.inline-canvas-native .canvas-card-menu,.inline-canvas-native .canvas-controls{display:none!important}.inline-canvas-native .canvas-wrapper{height:100%;width:100%;font-size:var(--font-text-size,16px);text-align:left}.inline-canvas-preview-toolbar{display:flex;justify-content:flex-end;gap:4px;align-items:center;max-width:100%;margin:6px 0;font-size:13px}.inline-canvas-preview-toolbar button{display:flex;align-items:center;justify-content:center;width:28px;height:28px;padding:4px;margin:0;background:transparent;box-shadow:none;border:0;color:var(--text-muted);cursor:pointer}.inline-canvas-preview-toolbar button:hover{background:var(--background-modifier-hover);color:var(--text-normal)}.inline-canvas-preview-toolbar button svg{width:18px;height:18px}.inline-canvas-preview-error{color:var(--text-error,#b42318)}.slides-container .inline-canvas-native h1{font-size:var(--h1-size)}.slides-container .inline-canvas-native h2{font-size:var(--h2-size)}.slides-container .inline-canvas-native h3{font-size:var(--h3-size)}.slides-container .inline-canvas-native h4{font-size:var(--h4-size)}.slides-container .inline-canvas-native h5{font-size:var(--h5-size)}.slides-container .inline-canvas-native h6{font-size:var(--h6-size)}.slides-container .inline-canvas-native :is(h1,h2,h3,h4,h5,h6){text-transform:none;color:var(--text-normal);font-family:var(--font-text)}';
     root.appendChild(style);
     const picture = doc.createElement('div');
     picture.className = 'inline-canvas-native';
@@ -144,20 +144,18 @@ module.exports = class InlineCanvas extends Plugin {
     const toolbar = doc.createElement('div');
     toolbar.className = 'inline-canvas-preview-toolbar';
     const edit = doc.createElement('button');
-    edit.className = 'inline-canvas-edit'; edit.textContent = '编辑流程图';
+    edit.className = 'inline-canvas-edit'; edit.title = '编辑流程图'; edit.setAttribute('aria-label', '编辑流程图'); setIcon(edit, 'pencil');
     const status = doc.createElement('span');
-    toolbar.append(edit, status); root.appendChild(toolbar);
-    const preview = { embed, root, picture, status, src, sourcePath, generation: 0 };
-    for (const [label, action] of [
-      ['放大', p => p.canvas?.zoomBy(0.25)],
-      ['缩小', p => p.canvas?.zoomBy(-0.25)],
-      ['原始大小', p => p.canvas?.setViewport(p.canvas.x, p.canvas.y, 0)],
-      ['适应画面', p => p.canvas?.zoomToFit()],
-      ['自动调整大小', p => { p.positioned = false; this.queueNativeLayout(p); }]
+    toolbar.append(edit); root.append(toolbar, status);
+    const preview = { embed, root, picture, toolbar, status, src, sourcePath, generation: 0 };
+    for (const [label, icon, action] of [
+      ['放大', 'plus', p => p.canvas?.zoomBy(0.25)],
+      ['缩小', 'minus', p => p.canvas?.zoomBy(-0.25)]
     ]) {
-      const button = doc.createElement('button'); button.textContent = label;
+      const button = doc.createElement('button');
+      button.title = label; button.setAttribute('aria-label', label); setIcon(button, icon);
       button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); action(preview); });
-      toolbar.insertBefore(button, status);
+      toolbar.appendChild(button);
     }
     // Do not let the native editor's drop handlers import or change files in previews.
     for (const type of ['drop', 'dragover']) picture.addEventListener(type, event => { event.preventDefault(); event.stopImmediatePropagation(); }, true);
@@ -453,6 +451,7 @@ module.exports = class InlineCanvas extends Plugin {
     const maxHeight = Math.max(240, Math.floor(preview.embed.ownerDocument.defaultView.innerHeight * 0.75));
     const cssWidth = Math.round(desiredWidth) + 'px';
     const cssHeight = Math.min(maxHeight, desiredHeight) + 'px';
+    if (preview.toolbar) preview.toolbar.style.width = cssWidth;
     if (preview.picture.style.width !== cssWidth || preview.picture.style.height !== cssHeight) {
       preview.picture.style.width = cssWidth;
       preview.picture.style.height = cssHeight;
