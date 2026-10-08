@@ -1,7 +1,7 @@
 {
   "id": "inline-canvas",
   "name": "Inline Canvas",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "minAppVersion": "1.5.0",
   "description": "从笔记当前位置插入白板，在旁边使用官方 Canvas 编辑，并在嵌入预览中显示卡片文字。",
   "author": "Emily-yt",
