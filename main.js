@@ -354,6 +354,8 @@ module.exports = class InlineCanvas extends Plugin {
     this.autoFitWrites.add(file.path);
     try {
       const sizes = [];
+      const savedData = this.app.vault.cachedRead ? JSON.parse(await this.app.vault.cachedRead(file)) : { nodes: [] };
+      const savedNodes = new Map((savedData.nodes || []).map(n => [n.id, n]));
       for (const node of canvas.nodes.values()) {
         if (typeof node.text !== 'string' || typeof node.resize !== 'function') continue;
         // Render even cards outside the viewport to measure their real Markdown.
@@ -362,8 +364,12 @@ module.exports = class InlineCanvas extends Plugin {
         const content = node.child?.previewMode?.renderer?.previewEl;
         if (!content || !content.clientWidth || !content.clientHeight || !content.querySelector('.markdown-preview-section')) continue;
         const original = node.height, originalWidth = node.width;
+        const saved = savedNodes.get(node.id);
+        const previousSizing = saved?.inlineCanvasSizing;
+        const lockedWidth = !!previousSizing?.lockedWidth || (Number.isFinite(previousSizing?.width) && originalWidth !== previousSizing.width);
+        const lockedHeight = !!previousSizing?.lockedHeight || (Number.isFinite(previousSizing?.height) && original !== previousSizing.height);
         const section = content.querySelector('.markdown-preview-section');
-        if (section?.getBoundingClientRect) {
+        if (!lockedWidth && section?.getBoundingClientRect) {
           const old = section.style.cssText;
           let naturalWidth;
           try {
@@ -376,7 +382,7 @@ module.exports = class InlineCanvas extends Plugin {
             if (width !== node.width) { node.resize({ width, height: node.height }); node.render(); }
           }
         }
-        for (let attempt = 0; attempt < 5; attempt++) {
+        for (let attempt = 0; !lockedHeight && attempt < 5; attempt++) {
           const visibleHeight = content.clientHeight;
           const previousHeight = content.style.height;
           let naturalHeight;
@@ -388,7 +394,8 @@ module.exports = class InlineCanvas extends Plugin {
           node.resize({ width: node.width, height });
           node.render();
         }
-        if (node.height !== original || node.width !== originalWidth) sizes.push({ id: node.id, text: node.text, width: node.width, originalWidth, original, height: node.height });
+        const sizing = { width: node.width, height: node.height, lockedWidth, lockedHeight };
+        if (node.height !== original || node.width !== originalWidth || JSON.stringify(previousSizing) !== JSON.stringify(sizing)) sizes.push({ id: node.id, text: node.text, width: node.width, originalWidth, original, height: node.height, sizing });
       }
       if (!sizes.length || this.previewDisposed) return;
       // Atomic merge: never overwrite newer text, manually changed dimensions,
@@ -402,6 +409,7 @@ module.exports = class InlineCanvas extends Plugin {
           if (size && node.type === 'text' && node.text === size.text && node.width === size.originalWidth && node.height === size.original) {
             node.height = size.height;
             node.width = size.width;
+            node.inlineCanvasSizing = size.sizing;
             changed = true;
           }
         }
