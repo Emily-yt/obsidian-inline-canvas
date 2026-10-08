@@ -7,6 +7,7 @@ module.exports = class InlineCanvas extends Plugin {
     this.observers = new Map();
     this.autoFitWrites = new Set();
     this.autoFitTimers = new Map();
+    this.activePointers = new Set();
 
     this.previewDisposed = false;
     this.register(() => {
@@ -81,6 +82,11 @@ module.exports = class InlineCanvas extends Plugin {
     this.registerDomEvent(doc, 'load', event => {
       if (event.target?.tagName === 'IFRAME') this.observePreviewFrame(event.target);
     }, true);
+    this.registerDomEvent(doc, 'pointerdown', event => this.activePointers.add(event.pointerId), true);
+    const release = event => this.activePointers.delete(event.pointerId);
+    this.registerDomEvent(doc, 'pointerup', release, true);
+    this.registerDomEvent(doc, 'pointercancel', release, true);
+    this.registerDomEvent(doc.defaultView, 'blur', () => this.activePointers.clear());
     this.registerDomEvent(doc, 'focusout', () => {
       const file = this.app.workspace.getActiveFile();
       if (file?.extension === 'canvas') this.queueOpenCanvasFit(file);
@@ -176,6 +182,7 @@ module.exports = class InlineCanvas extends Plugin {
   queuePreviewRefresh() {
     clearTimeout(this.refreshTimer);
     this.refreshTimer = setTimeout(() => {
+      if (this.activePointers?.size) { this.queuePreviewRefresh(); return; }
       for (const preview of this.previews.values()) if (preview.embed.isConnected) this.updatePreview(preview);
     }, 180);
   }
@@ -328,7 +335,12 @@ module.exports = class InlineCanvas extends Plugin {
     if (this.previewDisposed || !preview.canvas) return;
     preview.layoutTimer = setTimeout(() => {
       if (!preview.canvas || !preview.embed.isConnected || this.previewDisposed) return;
-      this.fitNativeTextCards(preview.canvas, this.resolvePreviewFile(preview))
+      if (this.activePointers?.size) { this.queueNativeLayout(preview); return; }
+      const file = this.resolvePreviewFile(preview);
+      const openEditor = this.app.workspace.getLeavesOfType?.('canvas').some(leaf => leaf.view.file?.path === file?.path);
+      // An open editor owns the document: previews must never save over it.
+      const fitting = openEditor ? Promise.resolve() : this.fitNativeTextCards(preview.canvas, file);
+      fitting
         .then(() => this.sizeNativePreview(preview))
         .catch(error => { preview.status.textContent = '自动调整失败：' + error.message; });
     }, 120);
@@ -340,17 +352,19 @@ module.exports = class InlineCanvas extends Plugin {
     this.autoFitTimers.set(file.path, setTimeout(() => {
       this.autoFitTimers.delete(file.path);
       if (this.previewDisposed) return;
+      if (this.activePointers?.size) { this.queueOpenCanvasFit(file); return; }
       for (const leaf of this.app.workspace.getLeavesOfType('canvas')) {
         if (leaf.view.file?.path === file.path && leaf.view.canvas) {
+          if (leaf.view.dirty) { this.queueOpenCanvasFit(file); return; }
           this.fitNativeTextCards(leaf.view.canvas, file).catch(error => this.report(error));
           break;
         }
       }
-    }, 250));
+    }, 800));
   }
 
   async fitNativeTextCards(canvas, file) {
-    if (!file || this.autoFitWrites.has(file.path) || this.previewDisposed) return;
+    if (!file || this.autoFitWrites.has(file.path) || this.previewDisposed || this.activePointers?.size) return;
     this.autoFitWrites.add(file.path);
     try {
       const sizes = [];
@@ -365,9 +379,16 @@ module.exports = class InlineCanvas extends Plugin {
         if (!content || !content.clientWidth || !content.clientHeight || !content.querySelector('.markdown-preview-section')) continue;
         const original = node.height, originalWidth = node.width;
         const saved = savedNodes.get(node.id);
+        // Never resize a live card with unsaved changes or an active text editor.
+        if (saved && (saved.text !== node.text || saved.width !== originalWidth || saved.height !== original)) continue;
         const previousSizing = saved?.inlineCanvasSizing;
         const lockedWidth = !!previousSizing?.lockedWidth || (Number.isFinite(previousSizing?.width) && originalWidth !== previousSizing.width);
         const lockedHeight = !!previousSizing?.lockedHeight || (Number.isFinite(previousSizing?.height) && original !== previousSizing.height);
+        if (previousSizing?.text === node.text) {
+          const sizing = { ...previousSizing, width: originalWidth, height: original, lockedWidth, lockedHeight };
+          if (JSON.stringify(sizing) !== JSON.stringify(previousSizing)) sizes.push({ id: node.id, text: node.text, width: originalWidth, originalWidth, original, height: original, sizing });
+          continue;
+        }
         const section = content.querySelector('.markdown-preview-section');
         if (!lockedWidth && section?.getBoundingClientRect) {
           const old = section.style.cssText;
@@ -394,7 +415,7 @@ module.exports = class InlineCanvas extends Plugin {
           node.resize({ width: node.width, height });
           node.render();
         }
-        const sizing = { width: node.width, height: node.height, lockedWidth, lockedHeight };
+        const sizing = { width: node.width, height: node.height, lockedWidth, lockedHeight, text: node.text };
         if (node.height !== original || node.width !== originalWidth || JSON.stringify(previousSizing) !== JSON.stringify(sizing)) sizes.push({ id: node.id, text: node.text, width: node.width, originalWidth, original, height: node.height, sizing });
       }
       if (!sizes.length || this.previewDisposed) return;
